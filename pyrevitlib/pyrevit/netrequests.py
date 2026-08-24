@@ -29,20 +29,18 @@ import clr
 try:
     clr.AddReference("System.Net.Http")
 except Exception as ex:
-    raise ImportError(
-        "Failed to load System.Net.Http: {}".format(ex)
-    )
+    raise ImportError("Failed to load System.Net.Http: {}".format(ex))
 
-from System import TimeSpan 
-from System.Net.Http import ( 
+from System import TimeSpan
+from System.Net.Http import (
     HttpClient,
     HttpRequestMessage,
     HttpMethod,
     StringContent,
-    HttpCompletionOption
+    HttpCompletionOption,
 )
 
-from System.IO import StreamReader 
+from System.IO import StreamReader
 
 try:
     from System.Text import Encoding
@@ -59,14 +57,18 @@ _shared_client = HttpClient()
 class RequestException(Exception):
     pass
 
+
 class Timeout(RequestException):
     pass
+
 
 class _Exceptions(object):
     RequestException = RequestException
     Timeout = Timeout
 
+
 exceptions = _Exceptions()
+
 
 def _urlencode(params):
     """
@@ -77,16 +79,17 @@ def _urlencode(params):
 
     try:
         from urllib.parse import urlencode
+
         return urlencode(params)
     except Exception:
         pass
 
     try:
         from urllib import urlencode
+
         return urlencode(params)
     except Exception:
         pass
-
 
     pairs = ("{}={}".format(str(k), str(v)) for k, v in params.items())
 
@@ -111,10 +114,7 @@ def _apply_params(url, params):
 def _get_exception_message(ex):
     try:
         if ex.InnerException:
-            return "{} | Inner: {}".format(
-                ex,
-                ex.InnerException
-            )
+            return "{} | Inner: {}".format(ex, ex.InnerException)
     except Exception:
         pass
 
@@ -130,16 +130,12 @@ class Response(object):
         self._reader = None
 
         try:
-            self.status_code = int(
-                dotnet_response.StatusCode
-            )
+            self.status_code = int(dotnet_response.StatusCode)
         except Exception:
             self.status_code = 0
 
         try:
-            self.reason = str(
-                dotnet_response.ReasonPhrase
-            )
+            self.reason = str(dotnet_response.ReasonPhrase)
         except Exception:
             self.reason = ""
 
@@ -156,7 +152,7 @@ class Response(object):
             pass
 
         self._content = b""
-        self._text = ""
+        self._text = None
 
         try:
             if not dotnet_response.Content:
@@ -171,32 +167,56 @@ class Response(object):
             except Exception:
                 pass
 
-                # Important:
-                # If this is a streaming response, do NOT read the full content here.
-                # SSE endpoints may never complete, so ReadAsStringAsync().Result
-                # would block forever.
-                if stream:
-                    return
-                try:
-                    self._content = (
-                        dotnet_response.Content
-                        .ReadAsByteArrayAsync()
-                        .Result
-                    )
-                except Exception:
-                    self._content = b""
+            if stream:
+                return
 
-                try:
-                    self._text = (
-                        dotnet_response.Content
-                        .ReadAsStringAsync()
-                        .Result
-                    )
-                except Exception:
-                    self._text = ""
+            try:
+                self._content = dotnet_response.Content.ReadAsByteArrayAsync().Result
+            except Exception:
+                self._content = b""
 
         except Exception:
             pass
+
+    def _get_text_encoding(self):
+        if not Encoding:
+            return None
+
+        content_type = self.headers.get("Content-Type", "")
+        for part in content_type.split(";"):
+            part = part.strip()
+            if not part.lower().startswith("charset="):
+                continue
+
+            charset = part.split("=", 1)[1].strip().strip('"')
+            if not charset:
+                break
+
+            try:
+                return Encoding.GetEncoding(charset)
+            except Exception:
+                break
+
+        try:
+            return Encoding.UTF8
+        except Exception:
+            return None
+
+    def _decode_content(self):
+        if not self._content:
+            return ""
+
+        encoding = self._get_text_encoding()
+        if encoding:
+            try:
+                return encoding.GetString(self._content)
+            except Exception:
+                pass
+
+        try:
+            return self._content.decode("utf-8")
+        except Exception:
+            return str(self._content)
 
     @property
     def ok(self):
@@ -204,6 +224,8 @@ class Response(object):
 
     @property
     def text(self):
+        if self._text is None:
+            self._text = self._decode_content()
         return self._text
 
     @property
@@ -218,29 +240,20 @@ class Response(object):
         import json
 
         if self._stream:
-            raise RequestException(
-                "Cannot parse streamed response as JSON."
-            )
+            raise RequestException("Cannot parse streamed response as JSON.")
 
-        if not self._text:
+        if not self.text:
             return {}
 
         try:
-            return json.loads(self._text)
+            return json.loads(self.text)
 
         except Exception as ex:
-            raise RequestException(
-                "Invalid JSON: {}".format(ex)
-            )
+            raise RequestException("Invalid JSON: {}".format(ex))
 
     def raise_for_status(self):
         if not self.ok:
-            raise RequestException(
-                "HTTP {} {}".format(
-                    self.status_code,
-                    self.reason
-                )
-            )
+            raise RequestException("HTTP {} {}".format(self.status_code, self.reason))
 
     def iter_lines(self):
         """
@@ -256,14 +269,10 @@ class Response(object):
         """
 
         try:
-            if not self._response or not self._response.Content:  
+            if not self._response or not self._response.Content:
                 return
 
-            stream = (
-                self._response.Content
-                .ReadAsStreamAsync()
-                .Result
-            )
+            stream = self._response.Content.ReadAsStreamAsync().Result
 
             self._reader = StreamReader(stream)
 
@@ -300,13 +309,14 @@ class Response(object):
         except Exception:
             pass
 
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
-def _create_request(
-        method,
-        url,
-        headers=None,
-        data=None,
-        json_data=None):
+
+def _create_request(method, url, headers=None, data=None, json_data=None):
 
     method_map = {
         "GET": HttpMethod.Get,
@@ -314,36 +324,26 @@ def _create_request(
         "PUT": HttpMethod.Put,
         "DELETE": HttpMethod.Delete,
         "PATCH": _PATCH,
-        "HEAD": HttpMethod.Head
+        "HEAD": HttpMethod.Head,
     }
 
     method_upper = method.upper()
 
     if method_upper not in method_map:
-        raise RequestException(
-            "Unsupported HTTP method: {}".format(method)
-        )
+        raise RequestException("Unsupported HTTP method: {}".format(method))
 
     try:
-        request = HttpRequestMessage(
-            method_map[method_upper],
-            url
-        )
+        request = HttpRequestMessage(method_map[method_upper], url)
 
     except Exception as ex:
         raise RequestException(
-            "Failed creating request: {}".format(
-                _get_exception_message(ex)
-            )
+            "Failed creating request: {}".format(_get_exception_message(ex))
         )
 
     if headers:
         for k, v in headers.items():
             try:
-                request.Headers.TryAddWithoutValidation(
-                    str(k),
-                    str(v)
-                )
+                request.Headers.TryAddWithoutValidation(str(k), str(v))
             except Exception:
                 # Some headers are content headers and cannot be added here.
                 # Content-Type is handled below when creating StringContent.
@@ -358,44 +358,43 @@ def _create_request(
 
             if Encoding:
                 request.Content = StringContent(
-                    payload,
-                    Encoding.UTF8,
-                    "application/json"
+                    payload, Encoding.UTF8, "application/json"
                 )
             else:
-                request.Content = StringContent(
-                    payload
-                )
+                request.Content = StringContent(payload)
 
         elif data is not None:
 
-            if not isinstance(data, str):
+            try:
+                string_types = (basestring,)
+            except NameError:
+                string_types = (str,)
+            if not isinstance(data, string_types):
                 data = str(data)
 
             request.Content = StringContent(data)
 
     except Exception as ex:
         raise RequestException(
-            "Failed creating content: {}".format(
-                _get_exception_message(ex)
-            )
+            "Failed creating content: {}".format(_get_exception_message(ex))
         )
 
     return request
 
 
 def request(
-        method,
-        url,
-        headers=None,
-        params=None,
-        data=None,
-        json=None,
-        stream=False,
-        timeout=None,
-        verify=None,
-        allow_redirects=True,
-        **kwargs):
+    method,
+    url,
+    headers=None,
+    params=None,
+    data=None,
+    json=None,
+    stream=False,
+    timeout=None,
+    verify=None,
+    allow_redirects=True,
+    **kwargs
+):
 
     if verify is False:
         raise NotImplementedError("verify=False is not supported")
@@ -412,37 +411,30 @@ def request(
 
         if timeout is not None:
             try:
-                client = HttpClient()
-                client.Timeout = TimeSpan.FromSeconds(
-                    float(timeout)
-                )
-                temporary_client = True
+                timeout_seconds = float(timeout)
             except Exception:
-                client = _shared_client
-                temporary_client = False
+                raise RequestException(
+                    "Unsupported timeout value: {!r}. Expected a number of seconds.".format(
+                        timeout
+                    )
+                )
+            client = HttpClient()
+            client.Timeout = TimeSpan.FromSeconds(timeout_seconds)
+            temporary_client = True
 
-        req = _create_request(
-            method,
-            url,
-            headers=headers,
-            data=data,
-            json_data=json
-        )
+        req = _create_request(method, url, headers=headers, data=data, json_data=json)
 
         try:
             if stream:
                 resp = client.SendAsync(
-                    req,
-                    HttpCompletionOption.ResponseHeadersRead
+                    req, HttpCompletionOption.ResponseHeadersRead
                 ).Result
             else:
                 resp = client.SendAsync(req).Result
 
         except Exception as ex:
             raise RequestException(
-                "HTTP request failed: {}".format(
-                    _get_exception_message(ex)
-                )
+                "HTTP request failed: {}".format(_get_exception_message(ex))
             )
 
         finally:
@@ -453,23 +445,13 @@ def request(
                 pass
 
         if resp is None:
-            raise RequestException(
-                "No response received"
-            )
+            raise RequestException("No response received")
 
         # If streaming, keep the temporary client alive until response.close().
         if stream and temporary_client:
-            return Response(
-                resp,
-                stream=True,
-                client=client
-            )
+            return Response(resp, stream=True, client=client)
 
-        response = Response(
-            resp,
-            stream=stream,
-            client=None
-        )
+        response = Response(resp, stream=stream, client=None)
 
         return response
 
@@ -480,10 +462,7 @@ def request(
         import traceback
 
         raise RequestException(
-            "{}\n\n{}".format(
-                _get_exception_message(ex),
-                traceback.format_exc()
-            )
+            "{}\n\n{}".format(_get_exception_message(ex), traceback.format_exc())
         )
 
     finally:
@@ -497,14 +476,15 @@ def request(
 
 
 def get(
-        url,
-        headers=None,
-        params=None,
-        stream=False,
-        timeout=None,
-        verify=None,
-        allow_redirects=True,
-        **kwargs):
+    url,
+    headers=None,
+    params=None,
+    stream=False,
+    timeout=None,
+    verify=None,
+    allow_redirects=True,
+    **kwargs
+):
 
     return request(
         "GET",
@@ -520,16 +500,17 @@ def get(
 
 
 def post(
-        url,
-        headers=None,
-        params=None,
-        data=None,
-        json=None,
-        stream=False,
-        timeout=None,
-        verify=None,
-        allow_redirects=True,
-        **kwargs):
+    url,
+    headers=None,
+    params=None,
+    data=None,
+    json=None,
+    stream=False,
+    timeout=None,
+    verify=None,
+    allow_redirects=True,
+    **kwargs
+):
 
     return request(
         "POST",
@@ -547,16 +528,17 @@ def post(
 
 
 def put(
-        url,
-        headers=None,
-        params=None,
-        data=None,
-        json=None,
-        stream=False,
-        timeout=None,
-        verify=None,
-        allow_redirects=True,
-        **kwargs):
+    url,
+    headers=None,
+    params=None,
+    data=None,
+    json=None,
+    stream=False,
+    timeout=None,
+    verify=None,
+    allow_redirects=True,
+    **kwargs
+):
 
     return request(
         "PUT",
@@ -574,16 +556,17 @@ def put(
 
 
 def patch(
-        url,
-        headers=None,
-        params=None,
-        data=None,
-        json=None,
-        stream=False,
-        timeout=None,
-        verify=None,
-        allow_redirects=True,
-        **kwargs):
+    url,
+    headers=None,
+    params=None,
+    data=None,
+    json=None,
+    stream=False,
+    timeout=None,
+    verify=None,
+    allow_redirects=True,
+    **kwargs
+):
 
     return request(
         "PATCH",
@@ -601,13 +584,14 @@ def patch(
 
 
 def delete(
-        url,
-        headers=None,
-        params=None,
-        timeout=None,
-        verify=None,
-        allow_redirects=True,
-        **kwargs):
+    url,
+    headers=None,
+    params=None,
+    timeout=None,
+    verify=None,
+    allow_redirects=True,
+    **kwargs
+):
 
     return request(
         "DELETE",
@@ -622,13 +606,14 @@ def delete(
 
 
 def head(
-        url,
-        headers=None,
-        params=None,
-        timeout=None,
-        verify=None,
-        allow_redirects=True,
-        **kwargs):
+    url,
+    headers=None,
+    params=None,
+    timeout=None,
+    verify=None,
+    allow_redirects=True,
+    **kwargs
+):
 
     return request(
         "HEAD",

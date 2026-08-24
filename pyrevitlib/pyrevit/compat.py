@@ -16,7 +16,7 @@ IRONPY = '.net' in sys.version.lower()
 IRONPY2 = PY2 and IRONPY
 IRONPY3 = PY3 and IRONPY
 NETCORE = System.Environment.Version.Major >= 8  # Revit 2025 onwards
-NETFRAMEWORK = not NETCORE # Revit 2024 and earlier
+NETFRAMEWORK = not NETCORE  # Revit 2024 and earlier
 NO_REVIT = -1
 REVIT_NETCORE_VERSION = 2025
 
@@ -41,10 +41,13 @@ elif PY3:
 try:
     if PY3:
         import requests
-    else:
+    elif IRONPY2 and NETCORE:
         import pyrevit.netrequests as requests
-except Exception:
+        sys.modules['requests'] = requests
+    else:
+        import requests
     import requests
+
 
 def _get_revit_version():
     """Returns the current Revit version as an integer."""
