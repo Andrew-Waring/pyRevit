@@ -43,10 +43,11 @@ try:
         import requests
     elif IRONPY2 and NETCORE:
         import pyrevit.netrequests as requests
-        sys.modules['requests'] = requests
+        sys.modules["requests"] = requests
     else:
         import requests
-    import requests
+except ImportError:
+    requests = None
 
 
 def _get_revit_version():
